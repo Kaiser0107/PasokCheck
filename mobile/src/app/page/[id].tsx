@@ -68,15 +68,33 @@ export default function PageDetails() {
             </Text>
           </View>
 
-          <View className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-6">
-            <View className="flex-row items-center mb-3">
+          <View className="mb-6">
+            <View className="flex-row items-center mb-4">
               <Bell size={18} color="#64748b" />
-              <Text className="text-slate-700 font-bold ml-2 text-lg">Latest Announcement</Text>
+              <Text className="text-slate-700 font-bold ml-2 text-lg">Announcement History</Text>
             </View>
             
-            <Text className="text-slate-600 leading-relaxed text-base">
-              {pageData?.recentPostText || "No recent class announcements found on this page."}
-            </Text>
+            {pageData?.history && pageData.history.length > 0 ? (
+              pageData.history.map((post: any, index: number) => (
+                <View key={post.postId || index} className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-3">
+                  <View className="flex-row justify-between items-center mb-2">
+                    <Text className={`font-bold text-xs uppercase tracking-wider px-2 py-1 rounded-full ${getStatusColor(post.status)}`}>
+                      {post.status}
+                    </Text>
+                    <Text className="text-slate-400 text-xs">
+                      {new Date(post.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                  <Text className="text-slate-700 leading-relaxed text-sm mt-2" numberOfLines={5}>
+                    {post.text || "No text content"}
+                  </Text>
+                </View>
+              ))
+            ) : (
+              <View className="bg-slate-50 border border-slate-200 rounded-2xl p-5">
+                <Text className="text-slate-500 italic text-center">No historical announcements found.</Text>
+              </View>
+            )}
           </View>
 
           <TouchableOpacity 

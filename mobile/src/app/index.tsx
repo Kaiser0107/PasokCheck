@@ -140,6 +140,37 @@ export default function HomeScreen() {
     }
   };
 
+  const handleRefresh = async () => {
+    setLoading(true);
+    try {
+      // Connect to local Express server running on port 3000
+      // For mobile devices, you may need to use your computer's local IP address instead of localhost
+      const host = Platform.OS === 'web' ? 'localhost' : '10.0.2.2'; // 10.0.2.2 is Android emulator loopback
+      
+      const response = await fetch(`http://${host}:3000/api/refresh`, {
+        method: 'POST'
+      });
+      
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to refresh");
+      }
+      
+      if (Platform.OS === 'web') {
+        window.alert("Scraping complete!");
+      } else {
+        Alert.alert("Success", "Scraping complete!");
+      }
+    } catch (error: any) {
+      if (Platform.OS === 'web') {
+        window.alert(`Refresh Failed: ${error.message}. Make sure your Node backend is running.`);
+      } else {
+        Alert.alert("Refresh Failed", `${error.message}. Make sure your Node backend is running.`);
+      }
+    }
+    setLoading(false);
+  };
+
   const overall = getOverallStatus();
 
   return (
@@ -167,6 +198,22 @@ export default function HomeScreen() {
       {/* Main Content */}
       <View className="flex-1 px-4 pt-6">
         
+        {/* Header with Refresh Button */}
+        <View className="flex-row justify-between items-center mb-4 ml-1 mr-1">
+          <Text className="text-lg font-bold text-slate-800">Tracked Schools</Text>
+          <TouchableOpacity 
+            onPress={handleRefresh}
+            disabled={loading}
+            className={`px-4 py-2 rounded-lg flex-row items-center ${loading ? 'bg-slate-300' : 'bg-blue-600 active:bg-blue-700'}`}
+          >
+            {loading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text className="text-white font-bold text-sm">Refresh Data</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
         {/* Add URL Input */}
         <View className="mb-8">
           <View className="flex-row items-center bg-white border border-slate-200 rounded-2xl px-4 py-2 shadow-sm">

@@ -1,4 +1,6 @@
-const { chromium } = require('playwright');
+const express = require('express');
+const cors = require('cors');
+const { ApifyClient } = require('apify-client');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getDatabase } = require('firebase-admin/database');
 require('dotenv').config();
@@ -11,223 +13,188 @@ initializeApp({
 });
 const db = getDatabase();
 
-// --- Core Functions ---
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-async function fetchTrackedPages() {
-  const snapshot = await db.ref('tracked_pages').once('value');
-  const data = snapshot.val();
-  if (!data) return [];
-  
-  return Object.keys(data).map(key => ({
-    id: key,
-    url: data[key].url
-  }));
-}
+// Initialize Apify client (Requires APIFY_TOKEN in .env)
+const client = new ApifyClient({
+    token: process.env.APIFY_TOKEN,
+});
 
-// Helper to parse messy Facebook date strings into a real Date object
-function parseFacebookDate(dateStr) {
-  if (!dateStr) return new Date();
-  const text = dateStr.toLowerCase();
-  const now = new Date();
-  
-  try {
-    if (text.includes('just now') || text.includes('min') || text.includes('m')) {
-      return now; // Close enough for hackathon
-    }
-    if (text.includes('hr') || text.includes('h')) {
-      const match = text.match(/(\d+)/);
-      if (match) {
-        now.setHours(now.getHours() - parseInt(match[1]));
-        return now;
-      }
-    }
-    if (text.includes('yesterday')) {
-      now.setDate(now.getDate() - 1);
-      return now;
-    }
-    
-    // Looks like "August 24 at 10:00 AM" or "August 24"
-    const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-    const shortMonths = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-    
-    for (let i = 0; i < 12; i++) {
-      if (text.includes(months[i]) || text.includes(shortMonths[i])) {
-        const dayMatch = text.match(/\d{1,2}/);
-        if (dayMatch) {
-          const yearMatch = text.match(/\d{4}/);
-          const year = yearMatch ? parseInt(yearMatch[0]) : now.getFullYear();
-          return new Date(year, i, parseInt(dayMatch[0]));
-        }
-      }
-    }
-  } catch (e) {
-    console.log(`Failed to parse date: ${dateStr}`);
-  }
-  return now; // Fallback
-}
-
-async function scrapePagePosts(page, targetUrl) {
-  console.log(`Scraping latest announcements from ${targetUrl}...`);
-  await page.goto(targetUrl, { waitUntil: 'networkidle' });
-  
-  try {
-    await page.waitForSelector('div[role="article"]', { timeout: 10000 });
-    
-    // Quick scroll to load the top 5 recent posts
-    for (let i = 0; i < 3; i++) {
-      try {
-        const closeBtn = await page.$('div[aria-label="Close"]');
-        if (closeBtn) await closeBtn.click();
-      } catch (e) {}
-
-      await page.evaluate(() => window.scrollBy(0, 1000));
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  } catch (e) {
-    console.log(`No articles found quickly for ${targetUrl}.`);
-    return [];
-  }
-  
-  const extractedPosts = await page.$$eval('div[role="article"]', (articles) => {
-    // Grab the top 10 posts (covers a full 24-48 hours easily)
-    return articles.slice(0, 10).map((el, index) => {
-      // INSTEAD of guessing which nested div has the caption, we grab ALL text inside the entire post!
-      const fullText = el.innerText || '';
-      
-      const imgElement = el.querySelector('img[referrerpolicy="origin-when-cross-origin"]');
-      const altText = imgElement ? (imgElement.getAttribute('alt') || '') : '';
-      
-      const dateElement = el.querySelector('a[role="link"] > span[dir="auto"], span > span > a[role="link"], span > a > span > span');
-      const rawDateText = dateElement ? dateElement.innerText : '';
-      
-      return {
-        id: `post_${index}`,
-        caption: fullText, // Now contains EVERYTHING: Page Name, Caption, Comments, etc.
-        altText: altText,
-        rawDateText: rawDateText,
-        imgUrl: imgElement ? imgElement.src : null
-      };
-    });
-  });
-
-  const validPosts = [];
-  
-  for (const post of extractedPosts) {
-    const postDate = parseFacebookDate(post.rawDateText);
-    post.timestamp = postDate.toISOString();
-    validPosts.push(post);
-  }
-  
-  console.log(`Extracted top ${validPosts.length} most recent posts.`);
-  return validPosts;
-}
-
-async function processPosts(posts) {
-  // Common terms used in the Philippines for class suspensions
+// Process raw post data to determine status
+function evaluatePostStatus(text) {
   const asyncKeywords = [
     'walang pasok', 'walangpasok', 'suspended', 'suspension', 'asynchronous', 'asynch', 
-    'modular', 'distance learning', 'cancel', 'cancelled', 'no face-to-face',
-    'no face to face', 'no f2f'
+    'modular', 'distance learning',  'cancelled', 'no face-to-face',
+    'no face to face', 'no f2f', "#WALANGPASOK"
   ];
-
-  // Common terms for online/live classes
+  
   const syncKeywords = [
-    'synchronous', 'synch', 'online class', 'virtual class', 'zoom', 'teams'
+    'synchronous', 'online class', 'online classes', 'face to face', 
+    'face-to-face', 'resume', 'resumed', 'f2f'
   ];
 
-  const allKeywords = [...asyncKeywords, ...syncKeywords];
+  const normalizedText = text.normalize('NFKC').toLowerCase();
 
-  for (const post of posts) {
-    // Normalize custom bold/italic unicode fonts back to standard ASCII letters using NFKC
-    const rawText = (post.caption + ' ' + post.altText);
-    const textToSearch = rawText.normalize('NFKC').toLowerCase();
-    
-    console.log(`\n[DEBUG] Evaluating Post: "${textToSearch.substring(0, 100)}..."`);
-    
-    // Check if post contains ANY relevant class-related keyword
-    if (!allKeywords.some(keyword => textToSearch.includes(keyword))) {
-      console.log(`-> Missed. No keywords matched.`);
-      continue; 
-    }
-    
-    let status = 'No Announcement';
-    
-    // Check which specific type of announcement it is
-    if (asyncKeywords.some(keyword => textToSearch.includes(keyword))) {
-      status = 'Asynchronous';
-    } else if (syncKeywords.some(keyword => textToSearch.includes(keyword))) {
-      status = 'Synchronous';
-    }
-    
-    return {
-      text: post.caption,
-      status: status,
-      timestamp: post.timestamp
-    };
+  for (const keyword of asyncKeywords) {
+    if (normalizedText.includes(keyword)) return 'Asynchronous';
   }
   
-  // Default if no relevant posts found
-  return {
-    text: "No recent class announcements found.",
-    status: "No Announcement",
-    timestamp: new Date().toISOString()
-  };
+  for (const keyword of syncKeywords) {
+    if (normalizedText.includes(keyword)) return 'Synchronous';
+  }
+
+  return 'No Announcement';
 }
 
-async function saveToFirebase(pageId, latestAnnouncement) {
-  // Save directly into the tracked_pages node for a super fast mobile UI
-  await db.ref(`tracked_pages/${pageId}`).update({
-    latestStatus: latestAnnouncement.status,
-    recentPostText: latestAnnouncement.text,
-    lastUpdated: latestAnnouncement.timestamp
-  });
-  console.log(`Successfully updated ${pageId} agenda in Firebase!`);
+// Scrape and Update logic
+async function performDeltaFetch() {
+  console.log("Starting Delta Fetch process...");
+  
+  // 1. Fetch tracked pages from Firebase
+  const snapshot = await db.ref('tracked_pages').once('value');
+  const trackedPages = snapshot.val();
+  if (!trackedPages) {
+    console.log('No pages tracked. Exiting.');
+    return;
+  }
+
+  const pagesArray = Object.keys(trackedPages).map(key => ({
+    id: key,
+    url: trackedPages[key].url,
+    hasDoneInitialFetch: trackedPages[key].hasDoneInitialFetch || false,
+    history: trackedPages[key].history || []
+  }));
+
+  // We group them by "Needs Initial Fetch" vs "Delta Fetch"
+  const needsDeepFetchUrls = pagesArray.filter(p => !p.hasDoneInitialFetch).map(p => ({ url: p.url }));
+  const needsDeltaFetchUrls = pagesArray.filter(p => p.hasDoneInitialFetch).map(p => ({ url: p.url }));
+
+  // Helper to run Apify actor
+  async function runApifyScraper(urls, limit) {
+    if (urls.length === 0) return [];
+    console.log(`Running Apify actor for ${urls.length} pages with resultsLimit=${limit}...`);
+    
+    // Using the official free Facebook posts scraper on Apify
+    const run = await client.actor("apify/facebook-posts-scraper").call({
+        startUrls: urls,
+        resultsLimit: limit
+    });
+    
+    console.log(`Apify run finished. Fetching dataset ${run.defaultDatasetId}...`);
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    return items;
+  }
+
+  // 2. Perform Deep Fetch for new pages (Top 5 posts)
+  if (needsDeepFetchUrls.length > 0) {
+    const deepPosts = await runApifyScraper(needsDeepFetchUrls, 5);
+    
+    // Group posts by page URL
+    const postsByUrl = {};
+    deepPosts.forEach(post => {
+      const pageUrl = post.facebookUrl || post.inputUrl;
+      if (!postsByUrl[pageUrl]) postsByUrl[pageUrl] = [];
+      postsByUrl[pageUrl].push(post);
+    });
+
+    for (const page of pagesArray.filter(p => !p.hasDoneInitialFetch)) {
+      const pagePosts = postsByUrl[page.url] || [];
+      const newHistory = pagePosts.map(post => ({
+        postId: post.id || post.url,
+        timestamp: post.time || new Date().toISOString(),
+        text: post.text || "",
+        status: evaluatePostStatus(post.text || "")
+      }));
+
+      // Sort newest first
+      newHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      
+      const latestStatus = newHistory.length > 0 ? newHistory[0].status : 'No Announcement';
+
+      await db.ref(`tracked_pages/${page.id}`).update({
+        history: newHistory,
+        hasDoneInitialFetch: true,
+        latestStatus: latestStatus,
+        lastUpdated: new Date().toISOString()
+      });
+      console.log(`Completed Deep Fetch for ${page.id}. Found ${newHistory.length} posts.`);
+    }
+  }
+
+  // 3. Perform Delta Fetch for existing pages (Top 1 posts)
+  if (needsDeltaFetchUrls.length > 0) {
+    const deltaPosts = await runApifyScraper(needsDeltaFetchUrls, 1);
+    
+    // Group posts by page URL
+    const postsByUrl = {};
+    deltaPosts.forEach(post => {
+      const pageUrl = post.facebookUrl || post.inputUrl;
+      if (!postsByUrl[pageUrl]) postsByUrl[pageUrl] = [];
+      postsByUrl[pageUrl].push(post);
+    });
+
+    for (const page of pagesArray.filter(p => p.hasDoneInitialFetch)) {
+      const pagePosts = postsByUrl[page.url] || [];
+      let updatedHistory = [...page.history];
+      let addedCount = 0;
+
+      for (const post of pagePosts) {
+        const postId = post.id || post.url;
+        // Check if this post is already in our history
+        const exists = updatedHistory.some(h => h.postId === postId);
+        
+        if (!exists) {
+          updatedHistory.unshift({ // Add to beginning of array
+            postId: postId,
+            timestamp: post.time || new Date().toISOString(),
+            text: post.text || "",
+            status: evaluatePostStatus(post.text || "")
+          });
+          addedCount++;
+        }
+      }
+
+      // Sort newest first just in case
+      updatedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      
+      const latestStatus = updatedHistory.length > 0 ? updatedHistory[0].status : 'No Announcement';
+
+      if (addedCount > 0) {
+        await db.ref(`tracked_pages/${page.id}`).update({
+          history: updatedHistory,
+          latestStatus: latestStatus,
+          lastUpdated: new Date().toISOString()
+        });
+        console.log(`Completed Delta Fetch for ${page.id}. Added ${addedCount} NEW posts.`);
+      } else {
+        console.log(`Completed Delta Fetch for ${page.id}. No new posts.`);
+      }
+    }
+  }
+
+  console.log("Delta Fetch process complete!");
 }
 
-// --- Main Execution ---
+// --- Express API Endpoints ---
 
-async function runScraper() {
-  console.log('--- STARTING SCRAPE CYCLE ---');
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-  });
-  const page = await context.newPage();
+app.post('/api/refresh', async (req, res) => {
+  if (!process.env.APIFY_TOKEN) {
+    return res.status(500).json({ error: "APIFY_TOKEN is not set in .env" });
+  }
 
   try {
-    const pagesSnapshot = await db.ref('tracked_pages').once('value');
-    const trackedPages = pagesSnapshot.val();
-
-    if (!trackedPages) {
-      console.log('No pages tracked. Waiting for next cycle.');
-      await browser.close();
-      return;
-    }
-
-    for (const [pageId, pageData] of Object.entries(trackedPages)) {
-      if (!pageData.url) continue;
-      
-      const posts = await scrapePagePosts(page, pageData.url);
-      const finalData = await processPosts(posts);
-      await saveToFirebase(pageId, finalData);
-    }
+    await performDeltaFetch();
+    res.json({ success: true, message: "Scraping complete." });
   } catch (error) {
-    console.error('Error in scraper:', error);
-  } finally {
-    console.log('--- SCRAPE CYCLE FINISHED ---');
-    await browser.close();
+    console.error("Scraping error:", error);
+    res.status(500).json({ error: error.message });
   }
-}
+});
 
-// Auto-run loop for Hackathon Demo!
-async function startDaemon() {
-  console.log("🚀 Starting PasokCheck Scraper Daemon...");
-  while (true) {
-    await runScraper();
-    console.log("⏳ Waiting 2 minutes before next scrape...");
-    await new Promise(resolve => setTimeout(resolve, 120000)); // Wait 2 mins
-  }
-}
-
-startDaemon();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`dYs? PasokCheck Backend API running on port ${PORT}`);
+  console.log(`Waiting for mobile app to trigger a refresh...`);
+});
