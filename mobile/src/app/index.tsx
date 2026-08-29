@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { View, Text, FlatList, ActivityIndicator, SafeAreaView } from 'react-native';
+import { View, Text, FlatList, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ref, onValue } from 'firebase/database';
 import { db } from '@/lib/firebase';
 import { StatusBar } from 'expo-status-bar';
@@ -21,15 +22,28 @@ export default function HomeScreen() {
     const unsubscribe = onValue(postsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        // Data comes in as an array from the scraper
         setPosts(data.filter(Boolean));
       } else {
         setPosts([]);
       }
       setLoading(false);
     }, (error) => {
-      console.error("Firebase read error:", error);
-      setLoading(false);
+      console.error("Firebase onValue error:", error);
+    });
+
+    // Fallback: Also try to get() it once. If WebSockets are blocked on Android,
+    // this standard HTTP request might succeed where onValue fails.
+    import('firebase/database').then(({ get }) => {
+      get(postsRef).then((snapshot) => {
+        const data = snapshot.val();
+        if (data && loading) {
+          setPosts(data.filter(Boolean));
+          setLoading(false);
+        }
+      }).catch(err => {
+        console.error("Firebase get() error:", err);
+        setLoading(false);
+      });
     });
 
     return () => unsubscribe();
