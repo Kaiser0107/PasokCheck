@@ -1,203 +1,251 @@
-import { useEffect, useState } from 'react';
-import { View, Text, FlatList, ActivityIndicator, TextInput, TouchableOpacity, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ref, onValue, set, get } from 'firebase/database';
-import { db } from '@/lib/firebase';
-import { StatusBar } from 'expo-status-bar';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, TextInput, TouchableOpacity, FlatList, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard, Alert } from 'react-native';
+import { useState, useEffect } from 'react';
+import { getDatabase, ref, set, get, onValue, remove } from 'firebase/database';
+import { app } from '../lib/firebase';
+import { Plus, Search, Building2, ChevronRight, AlertCircle, Trash2, Check } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
 
-type Post = {
-  id: string;
-  text: string;
-  timestamp: string;
-};
-
-type TrackedPage = {
+interface TrackedPage {
   id: string;
   url: string;
-  latestPost?: Post;
-};
+  latestStatus?: string;
+  timestamp?: string;
+  hasWeekendClasses?: boolean;
+}
 
 export default function HomeScreen() {
-  const [pages, setPages] = useState<TrackedPage[]>([]);
-  const [loading, setLoading] = useState(true);
   const [inputUrl, setInputUrl] = useState('');
+  const [ignoreWeekends, setIgnoreWeekends] = useState(false);
+  const [trackedPages, setTrackedPages] = useState<TrackedPage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const router = useRouter();
+
+  // Clock ticking effect
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 60000); // update every minute
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
-    // 1. Listen to all tracked pages
+    const db = getDatabase(app);
     const pagesRef = ref(db, 'tracked_pages');
-    
+
     const unsubscribePages = onValue(pagesRef, (snapshot) => {
       const data = snapshot.val();
-      if (!data) {
-        setPages([]);
-        setLoading(false);
-        return;
+      if (data) {
+        const pagesList = Object.keys(data).map(key => ({
+          id: key,
+          url: data[key].url,
+          latestStatus: data[key].latestStatus || 'Scanning...',
+          timestamp: data[key].lastUpdated || ''
+        }));
+        
+        setTrackedPages(pagesList);
+      } else {
+        setTrackedPages([]);
       }
-
-      const pageList: TrackedPage[] = Object.keys(data).map(key => ({
-        id: key,
-        url: data[key].url,
-      }));
-
-      // 2. Fetch the latest post for each page to determine status
-      Promise.all(
-        pageList.map(async (page) => {
-          const snapshot = await get(ref(db, `announcements/${page.id}`));
-          const posts = snapshot.val();
-          if (posts && Array.isArray(posts) && posts.length > 0) {
-            page.latestPost = posts[0]; // Assuming index 0 is the newest
-          }
-          return page;
-        })
-      ).then((enrichedPages) => {
-        setPages(enrichedPages);
-        setLoading(false);
-      });
-    }, (error) => {
-      console.error("Firebase read error:", error);
       setLoading(false);
     });
 
-    return () => {
-      unsubscribePages();
-    };
+    return () => unsubscribePages();
   }, []);
 
-  const handleAddUrl = async () => {
-    if (!inputUrl) return;
+  const getOverallStatus = () => {
+    if (trackedPages.length === 0) return { status: 'No Data', sub: 'Add a Page', color: 'bg-slate-100 border-slate-200', text: 'text-slate-600', badge: 'bg-slate-200 text-slate-700' };
     
-    try {
-      // Very basic URL extraction to get the page ID
-      // e.g., https://www.facebook.com/PGNEOfficial -> PGNEOfficial
-      const urlObj = new URL(inputUrl);
-      const paths = urlObj.pathname.split('/').filter(Boolean);
-      const pageId = paths[0];
+    const day = new Date().getDay();
+    const isWeekendDay = day === 0 || day === 6;
 
-      if (!pageId) {
-        Alert.alert("Invalid URL", "Could not extract Facebook Page ID.");
-        return;
+    // If it's a weekend AND they haven't checked the "Force Status" box, just show Weekend!
+    if (isWeekendDay && !ignoreWeekends) {
+      return { status: 'Weekend', sub: 'No Classes', color: 'bg-purple-50 border-purple-200', text: 'text-purple-700', badge: 'bg-purple-100 text-purple-700' };
+    }
+
+    const validPages = trackedPages.filter(p => p.latestStatus !== 'Scanning...');
+    if (validPages.length === 0) {
+      return { status: 'Scanning...', sub: 'Please Wait', color: 'bg-slate-50 border-slate-200', text: 'text-slate-500', badge: 'bg-slate-100 text-slate-600' };
+    }
+
+    const totalTracked = validPages.length;
+    const asyncCount = validPages.filter(p => p.latestStatus === 'Asynchronous').length;
+    const syncCount = validPages.filter(p => p.latestStatus === 'Synchronous').length;
+    const noAnnouncementCount = validPages.filter(p => p.latestStatus === 'No Announcement').length;
+    
+    if (noAnnouncementCount === totalTracked) {
+      return { status: 'Face to Face', sub: 'No Announcement', color: 'bg-red-50 border-red-200', text: 'text-red-700', badge: 'bg-red-100 text-red-700' };
+    }
+    
+    if (asyncCount + syncCount === totalTracked) {
+      return { status: 'Classes Suspended', sub: 'Stay Home', color: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700', badge: 'bg-emerald-100 text-emerald-700' };
+    }
+    
+    return { status: 'Partial Suspensions', sub: 'Mixed', color: 'bg-yellow-50 border-yellow-300', text: 'text-yellow-700', badge: 'bg-yellow-200 text-yellow-800' };
+  };
+
+  const handleAddUrl = async () => {
+    if (!inputUrl.includes('facebook.com/')) {
+      alert("Please enter a valid Facebook URL.");
+      return;
+    }
+
+    setAdding(true);
+    Keyboard.dismiss();
+    try {
+      let pageId = inputUrl.split('facebook.com/')[1].split('/')[0].split('?')[0];
+      if (pageId === 'profile.php') {
+        const urlParams = new URLSearchParams(inputUrl.split('?')[1]);
+        pageId = urlParams.get('id') || 'unknown';
       }
 
-      await set(ref(db, `tracked_pages/${pageId}`), {
+      const db = getDatabase(app);
+      const newPageRef = ref(db, `tracked_pages/${pageId}`);
+      
+      await set(newPageRef, {
         url: inputUrl,
         addedAt: new Date().toISOString()
       });
 
       setInputUrl('');
-      Alert.alert("Success", `${pageId} added! The scraper will fetch its data shortly.`);
-    } catch (e) {
-      Alert.alert("Error", "Please enter a valid URL (e.g. https://facebook.com/name)");
+    } catch (error) {
+      console.error(error);
+      alert("Failed to add URL.");
+    }
+    setAdding(false);
+  };
+
+  const deletePage = async (id: string) => {
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Are you sure you want to stop tracking ${id}?`)) {
+        const db = getDatabase(app);
+        await remove(ref(db, `tracked_pages/${id}`));
+      }
+    } else {
+      Alert.alert(
+        "Untrack Page",
+        `Are you sure you want to stop tracking ${id}?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { 
+            text: "Delete", 
+            style: "destructive",
+            onPress: async () => {
+              const db = getDatabase(app);
+              await remove(ref(db, `tracked_pages/${id}`));
+            }
+          }
+        ]
+      );
     }
   };
 
-  const getStatus = (text?: string) => {
-    if (!text) return { label: "No Data Yet", color: "bg-slate-100 text-slate-500", dot: "bg-slate-400" };
-    
-    const lowerText = text.toLowerCase();
-    if (lowerText.includes("walang pasok") || lowerText.includes("suspended")) {
-      return { label: "Suspended", color: "bg-red-100 text-red-700", dot: "bg-red-500" };
-    }
-    return { label: "Normal", color: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" };
-  };
-
-  const renderCard = ({ item }: { item: TrackedPage }) => {
-    const status = getStatus(item.latestPost?.text);
-    
-    return (
-      <View className="bg-white p-5 mb-4 rounded-2xl shadow-sm border border-slate-100 mx-4">
-        {/* Header */}
-        <View className="flex-row items-center justify-between mb-3">
-          <View className="flex-row items-center flex-1">
-            <View className="w-12 h-12 rounded-full bg-blue-50 items-center justify-center mr-3 border border-blue-100">
-              <Text className="text-blue-600 font-bold text-lg">{item.id.charAt(0).toUpperCase()}</Text>
-            </View>
-            <View className="flex-1 pr-2">
-              <Text className="font-bold text-slate-800 text-lg" numberOfLines={1}>{item.id}</Text>
-              <Text className="text-xs text-slate-400">Facebook Page</Text>
-            </View>
-          </View>
-          
-          {/* Status Badge */}
-          <View className={`px-3 py-1.5 rounded-full flex-row items-center ${status.color}`}>
-            <View className={`w-2 h-2 rounded-full mr-1.5 ${status.dot}`} />
-            <Text className={`font-semibold text-xs ${status.color.split(' ')[1]}`}>
-              {status.label}
-            </Text>
-          </View>
-        </View>
-
-        {/* Latest Post Snippet */}
-        <View className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-          <Text className="text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">Latest Update</Text>
-          {item.latestPost ? (
-            <>
-              <Text className="text-slate-700 leading-5" numberOfLines={3}>
-                {item.latestPost.text}
-              </Text>
-              <Text className="text-[10px] text-slate-400 mt-2">
-                {new Date(item.latestPost.timestamp).toLocaleString()}
-              </Text>
-            </>
-          ) : (
-            <Text className="text-slate-400 italic py-2">Waiting for the backend scraper...</Text>
-          )}
-        </View>
-      </View>
-    );
-  };
+  const overall = getOverallStatus();
 
   return (
-    <SafeAreaView className="flex-1 bg-slate-50">
-      <StatusBar style="dark" />
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} className="flex-1 bg-slate-50">
       
-      {/* Header */}
-      <View className="pt-2 pb-4 px-4 bg-white border-b border-slate-200 mb-4 shadow-sm">
-        <Text className="text-3xl font-black text-slate-900 tracking-tight">PasokCheck</Text>
-        <Text className="text-slate-500 font-medium">Dynamic Page Tracker</Text>
-      </View>
-
-      {/* Input Area */}
-      <View className="px-4 mb-4 flex-row">
-        <TextInput 
-          className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 mr-2 text-slate-700"
-          placeholder="Paste Facebook Page URL..."
-          value={inputUrl}
-          onChangeText={setInputUrl}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity 
-          onPress={handleAddUrl}
-          className="bg-blue-600 rounded-xl px-5 justify-center items-center shadow-sm"
-        >
-          <Text className="text-white font-bold">Track</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Feed */}
-      {loading ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#3b82f6" />
-          <Text className="mt-4 text-slate-500 font-medium">Loading pages...</Text>
+      {/* Overall Status Banner */}
+      <View className="pt-16 pb-6 px-6 bg-white border-b border-slate-200 shadow-sm z-10">
+        <View className="flex-row justify-between items-end mb-3">
+          <Text className="text-slate-500 font-semibold tracking-wider text-xs uppercase">Overall Status Today</Text>
+          <Text className="text-slate-400 font-medium text-xs">
+            {currentTime.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} • {currentTime.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+          </Text>
         </View>
-      ) : (
-        <FlatList
-          data={pages}
-          keyExtractor={(item) => item.id}
-          renderItem={renderCard}
-          ListEmptyComponent={
-            <View className="p-8 items-center justify-center mt-10">
-              <View className="w-16 h-16 bg-slate-100 rounded-full items-center justify-center mb-4">
-                <Ionicons name="search" size={24} color="#94a3b8" />
-              </View>
-              <Text className="text-slate-500 text-center text-lg font-medium">No pages tracked yet.</Text>
-              <Text className="text-slate-400 text-center mt-2">Paste a URL above to start monitoring a school or LGU.</Text>
+        <View className={`p-5 rounded-2xl border ${overall.color} flex-row items-center justify-between`}>
+          <View>
+            <Text className={`text-2xl font-black ${overall.text} mb-1`}>{overall.status}</Text>
+            <View className={`self-start px-2 py-0.5 rounded-full ${overall.badge}`}>
+              <Text className={`text-xs font-bold uppercase tracking-wider ${overall.text}`}>{overall.sub}</Text>
             </View>
-          }
-          contentContainerStyle={{ paddingBottom: 40 }}
-        />
-      )}
-    </SafeAreaView>
+          </View>
+          <AlertCircle size={32} className={overall.text} strokeWidth={2} />
+        </View>
+      </View>
+
+      {/* Main Content */}
+      <View className="flex-1 px-4 pt-6">
+        
+        {/* Add URL Input */}
+        <View className="mb-8">
+          <View className="flex-row items-center bg-white border border-slate-200 rounded-2xl px-4 py-2 shadow-sm">
+            <Search size={20} color="#94a3b8" />
+            <TextInput
+              className="flex-1 h-12 ml-3 text-slate-800 text-base"
+              placeholder="Paste Facebook URL..."
+              placeholderTextColor="#94a3b8"
+              value={inputUrl}
+              onChangeText={setInputUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity 
+              className="bg-slate-900 w-10 h-10 rounded-xl items-center justify-center active:bg-slate-800"
+              onPress={handleAddUrl}
+              disabled={adding}
+            >
+              {adding ? <ActivityIndicator color="#fff" size="small" /> : <Plus color="#fff" size={24} />}
+            </TouchableOpacity>
+          </View>
+          
+          <TouchableOpacity 
+            className="flex-row items-center mt-3 ml-2" 
+            onPress={() => setIgnoreWeekends(!ignoreWeekends)}
+          >
+            <View className={`w-5 h-5 rounded items-center justify-center mr-2 border ${ignoreWeekends ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'}`}>
+              {ignoreWeekends && <Check size={14} color="white" />}
+            </View>
+            <Text className="text-slate-600 text-sm font-medium">Force status calculation on Weekends</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Text className="text-lg font-bold text-slate-900 mb-4 px-2">Tracked Pages</Text>
+        
+        {loading ? (
+          <ActivityIndicator size="large" color="#0f172a" className="mt-10" />
+        ) : (
+          <FlatList
+            data={trackedPages}
+            keyExtractor={(item) => item.id}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 40 }}
+            renderItem={({ item }) => {
+              const displayStatus = item.latestStatus || 'Scanning...';
+              
+              const isAsync = displayStatus === 'Asynchronous';
+              const isSync = displayStatus === 'Synchronous';
+              
+              const dotColor = isAsync ? 'bg-green-500' : isSync ? 'bg-blue-500' : 'bg-red-500';
+
+              return (
+                <TouchableOpacity 
+                  className="bg-white border border-slate-200 rounded-2xl p-4 mb-3 flex-row items-center shadow-sm active:bg-slate-50"
+                  onPress={() => router.push(`/page/${item.id}`)}
+                >
+                  <View className="w-12 h-12 bg-slate-100 rounded-full items-center justify-center mr-4">
+                    <Building2 size={24} color="#64748b" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-bold text-slate-900" numberOfLines={1}>{item.id}</Text>
+                    <View className="flex-row items-center mt-1">
+                      <View className={`w-2 h-2 rounded-full mr-2 ${dotColor}`} />
+                      <Text className="text-slate-500 text-sm font-medium">{displayStatus}</Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity 
+                    onPress={() => deletePage(item.id)}
+                    className="p-2 mr-1 active:bg-red-50 rounded-full"
+                  >
+                    <Trash2 size={20} color="#ef4444" />
+                  </TouchableOpacity>
+                  <ChevronRight size={20} color="#cbd5e1" />
+                </TouchableOpacity>
+              );
+            }}
+          />
+        )}
+      </View>
+    </KeyboardAvoidingView>
   );
 }
