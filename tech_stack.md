@@ -1,20 +1,22 @@
 # PasokCheck: Tech Stack & Architecture
 
-This document outlines the core technologies used to build PasokCheck, a dynamic suspension tracking platform.
+This document outlines the technologies currently used in PasokCheck.
 
 ## Frontend (Mobile App)
-* **React Native**: A framework that allows us to build native mobile apps for both iOS and Android using JavaScript and React.
-* **Expo**: A set of tools and services built around React Native that makes developing, building, and testing mobile apps significantly easier (e.g., Expo Go).
-* **NativeWind (Tailwind CSS)**: A styling engine that lets us use Tailwind CSS utility classes directly inside React Native. It allows for rapid UI development without writing custom stylesheets.
+* **React Native + React 19**: Cross-platform mobile UI framework.
+* **Expo + Expo Router**: App runtime, tooling, and file-based routing.
+* **NativeWind (Tailwind CSS)**: Utility-first styling for React Native components.
+* **Firebase Client SDK**: Realtime reads/listeners for tracked page status updates.
 
-## Backend (Data Collection)
-* **Node.js**: A JavaScript runtime that allows us to execute backend scripts (like our scraper) outside of a web browser.
-* **Playwright**: A powerful browser automation library. We use it to launch a "headless" (invisible) browser to navigate to Facebook pages and scrape HTML elements just like a real human would, bypassing basic bot protections.
-* **Tesseract.js**: A pure JavaScript port of the popular Tesseract Optical Character Recognition (OCR) engine. We use it to "read" the text inside suspension infographics locally without needing expensive cloud APIs or heavy Python models.
+## Backend (Data Collection API)
+* **Node.js**: Runtime for the backend service and scraper orchestration.
+* **Express**: API server (`/api/refresh`) used to trigger scraping.
+* **Apify Client**: Integrates with `apify/facebook-posts-scraper` actor for Facebook post collection.
+* **firebase-admin**: Writes tracked page history and latest status to Firebase.
 
-## Database & Cloud
-* **Firebase Realtime Database**: A cloud-hosted NoSQL database. Data is stored as one large JSON tree and synchronized in real-time to every connected client.
-  * **Firebase Admin SDK**: Used by our Node.js scraper to bypass security rules and write data securely using a Service Account Key.
-  * **Firebase Client SDK**: Used by our React Native app to listen to database changes (`onValue`) so the UI updates instantly without the user needing to refresh.
-* **GitHub Actions** *(Planned)*: A CI/CD platform that we will use to run our Node.js scraper on a schedule (cron job) completely autonomously.
+## Database & Automation
+* **Firebase Realtime Database**: Primary datastore for tracked pages and announcement history.
+* **GitHub Actions**: Scheduled workflow (`.github/workflows/scraper.yml`) that runs the scraper every 30 minutes.
 
+## OCR Status
+* **Tesseract.js** is present as a dependency, but OCR is not yet wired into the current scraping flow.

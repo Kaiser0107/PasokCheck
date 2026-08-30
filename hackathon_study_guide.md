@@ -11,7 +11,7 @@ To build mobile and web user interfaces quickly:
 
 ## 2. JavaScript & Node.js (Backend)
 To write scrapers, APIs, and automation scripts:
-* **Asynchronous Programming (`async` / `await` / Promises)**: Hackathons heavily rely on fetching data over the internet. You must understand how to "wait" for a network request to finish (like waiting for Playwright to load a page or Tesseract to read an image) before moving to the next line of code.
+* **Asynchronous Programming (`async` / `await` / Promises)**: Hackathons heavily rely on fetching data over the internet. You must understand how to "wait" for a network request to finish (like waiting for an Apify actor run to complete or OCR processing to finish) before moving to the next line of code.
 * **DOM Traversal (Web Scraping)**: Understanding how HTML is structured and how to use CSS selectors (like `div[role="article"]` or `img`) to extract specific data from a website.
 
 ## 3. Databases (Firebase NoSQL)
@@ -23,4 +23,3 @@ To store and retrieve user data:
 Hackathon judges love to see clever solutions to hard problems:
 * **Decoupled Architecture**: Understanding why we separated the heavy scraping logic (Node.js) from the mobile display logic (React Native), using Firebase as the "bridge" in the middle.
 * **Fallback Mechanisms**: Writing code that expects to fail (e.g., wrapping the Tesseract OCR inside a `try/catch` block so if an image is corrupted, the whole app doesn't crash).
-

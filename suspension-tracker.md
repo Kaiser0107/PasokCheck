@@ -2,9 +2,9 @@
 
 ## Architecture Overview
 - **Mobile Frontend:** React Native / Expo
-- **Backend / Scraper:** Node.js with Playwright (Scheduled via GitHub Actions)
-- **Database:** Firebase (Realtime Database or Firestore)
-- **OCR Engine:** Unlimited-OCR (Baidu) for image text extraction
+- **Backend / Scraper:** Node.js + Express + Apify (`apify/facebook-posts-scraper`)
+- **Database:** Firebase Realtime Database
+- **OCR Engine:** Not active yet (Tesseract.js dependency available for future integration)
 
 ## Task Breakdown
 
@@ -15,8 +15,8 @@
 - [ ] Configure GitHub Actions workflow for the scraper cron job
 
 ### Phase 2: Scraper & OCR Integration
-- [ ] Develop Playwright script in Node.js to scrape target Facebook pages (Mayors, LGUs, Schools)
-- [ ] Integrate `baidu/Unlimited-OCR` for extracting text from scraped image announcements
+- [ ] Integrate Apify actor-based scraping into scheduled and manual refresh flows
+- [ ] Integrate Tesseract.js OCR for extracting text from scraped image announcements
 - [ ] Implement parsing logic to detect suspension keywords (e.g., "suspended", "walang pasok, asynchronous")
 - [ ] Set up Firebase Admin SDK in the Node.js scraper to push structured data to the database
 
@@ -35,7 +35,7 @@
 ## Agent Assignments
 - **project-planner:** Created this initial architecture and breakdown.
 - **frontend-developer:** Handle Phase 1 (Expo setup) and Phase 3 (App UI/UX).
-- **backend-developer:** Handle Phase 2 (Playwright + OCR + Firebase integration) and Phase 4 backend testing.
+- **backend-developer:** Handle Phase 2 (Apify + OCR + Firebase integration) and Phase 4 backend testing.
 
 ## Verification Checklist (Phase X)
 - [ ] Scraper successfully retrieves the latest posts without getting blocked.
@@ -43,4 +43,3 @@
 - [ ] Scraped data is correctly formatted, categorized, and stored in Firebase.
 - [ ] Mobile app retrieves data from Firebase and updates the UI accurately.
 - [ ] GitHub Actions cron job runs successfully on schedule.
-
