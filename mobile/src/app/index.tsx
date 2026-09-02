@@ -2,10 +2,11 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Platform, K
 import { useState, useEffect, useCallback } from 'react';
 import { getDatabase, ref, set, onValue } from 'firebase/database';
 import { app } from '../lib/firebase';
-import { Plus, Search, RefreshCw, GraduationCap, ChevronRight, Bell } from 'lucide-react-native';
+import { Plus, Search, RefreshCw, GraduationCap, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
-import { registerForPushNotificationsAsync, isExpoGoPushUnsupported } from '../lib/notifications';
 import { Image } from 'expo-image';
+import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
+import { faFileCircleQuestion, faMagnifyingGlass, faGraduationCap, faPartyHorn, faCloudSunRain, faTriangleExclamation, faUmbrellaBeach } from '@fortawesome/free-solid-svg-icons';
 
 interface TrackedPage { id: string; url: string; latestStatus?: string; timestamp?: string; pfp?: string; pageName?: string; parentId?: string | null; type?: 'lgu'|'school'|string; }
 
@@ -57,24 +58,10 @@ export default function HomeScreen() {
   const [adding, setAdding] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [now, setNow] = useState(new Date());
-  const [pushStatus, setPushStatus] = useState<'checking'|'granted'|'denied'|'undetermined'>('checking');
-  const [pushToken, setPushToken] = useState<string | null>(null);
   const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => { const t = setInterval(()=>setNow(new Date()),60000); return ()=>clearInterval(t); }, []);
-  useEffect(() => {
-    if (isExpoGoPushUnsupported()) { setPushStatus('undetermined'); return; }
-    import('expo-notifications').then(({ getPermissionsAsync }) => {
-      getPermissionsAsync().then(({ status }) => {
-        if (status === 'granted') {
-          setPushStatus('granted');
-          registerForPushNotificationsAsync().then(t=>t&&setPushToken(t));
-        } else if (status === 'denied') setPushStatus('denied');
-        else setPushStatus('undetermined');
-      });
-    }).catch(() => setPushStatus('undetermined'));
-  }, []);
   useEffect(() => {
     const unsub = onValue(ref(getDatabase(app),'tracked_pages'), snap=>{
       const d=snap.val();
@@ -100,7 +87,7 @@ export default function HomeScreen() {
       verdict: 'Add a page to get started',
       chip: null as any,
       bg: 'bg-white', border: 'border-zinc-200', shadow: false,
-      icon: '📄',
+      icon: faFileCircleQuestion, iconColor: '#a1a1aa',
       hint: 'Track a school, LGU, or mayor page to see updates here',
     };
     const valid=trackedPages.filter(p=>getEffectiveStatus(p)!=='Scanning...');
@@ -109,8 +96,8 @@ export default function HomeScreen() {
       verdict:'No announcement yet',
       chip:{label:'PENDING', style:'bg-white text-zinc-600 border border-zinc-300'},
       bg:'bg-white', border:'border-zinc-300', shadow:false,
-      icon:'🔎',
-      hint:'We haven’t seen a post today — check back soon',
+      icon: faMagnifyingGlass, iconColor: '#71717a',
+      hint:'We haven't seen a post today — check back soon',
     };
     const newest=valid.reduce((a,b)=> (a.timestamp && b.timestamp && new Date(a.timestamp)>new Date(b.timestamp)?a:b));
     const stale=newest.timestamp ? (Date.now()-new Date(newest.timestamp).getTime()>6*3600*1000) : false;
@@ -119,20 +106,29 @@ export default function HomeScreen() {
       verdict:`Last check ${timeAgo(newest.timestamp)}`,
       chip:{label:'STALE', style:'bg-amber-100 text-amber-800 border border-amber-200'},
       bg:'bg-amber-50', border:'border-amber-200', shadow:false,
-      icon:'⚠️',
+      icon: faTriangleExclamation, iconColor: '#d97706',
       hint:'Tap Refresh to re-scan',
     };
     const effective = valid.map(p => getEffectiveStatus(p));
     const total=effective.length;
     const asyncN=effective.filter(s=>s==='Asynchronous').length;
     const syncN=effective.filter(s=>s==='Synchronous').length;
+    const holidayN=effective.filter(s=>s==='Holiday').length;
     const noAnn=effective.filter(s=>s==='No Announcement').length;
+    if(holidayN===total) return {
+      title:'Holiday today',
+      verdict:'No classes — public holiday',
+      chip:{label:'HOLIDAY', style:'bg-violet-100 text-violet-800 border border-violet-200'},
+      bg:'bg-violet-50', border:'border-violet-200', shadow:false,
+      icon: faUmbrellaBeach, iconColor: '#7c3aed',
+      hint:'Enjoy the holiday! Schools are closed.',
+    };
     if(noAnn===total) return {
       title:'Regular class',
       verdict:'No suspensions posted',
       chip:{label:'REGULAR CLASS', style:'bg-zinc-100 text-zinc-700 border border-zinc-200'},
       bg:'bg-white', border:'border-zinc-200', shadow:false,
-      icon:'🎒',
+      icon: faGraduationCap, iconColor: '#3f3f46',
       hint:'All tracked pages show no announcement',
     };
     if(asyncN+syncN===total) return {
@@ -140,7 +136,7 @@ export default function HomeScreen() {
       verdict:'Classes suspended — stay home',
       chip:{label:'NO CLASS', style:'bg-emerald-600 text-white border-emerald-600'},
       bg:'bg-[#FFE600]', border:'border-black', shadow:true,
-      icon:'🎉',
+      icon: faPartyHorn, iconColor: '#000',
       hint:'All pages report suspension',
     };
     return {
@@ -148,7 +144,7 @@ export default function HomeScreen() {
       verdict:'Some pages suspended',
       chip:{label:'PARTIAL', style:'bg-orange-100 text-orange-800 border border-orange-200'},
       bg:'bg-[#FFF7ED]', border:'border-orange-200', shadow:false,
-      icon:'🌦️',
+      icon: faCloudSunRain, iconColor: '#c2410c',
       hint:'Check each page — results differ',
     };
   };
@@ -185,35 +181,6 @@ export default function HomeScreen() {
     setRefreshing(false); setLoading(false);
   },[]);
 
-  const handleEnablePush = async () => {
-    if (Platform.OS === 'web') { Alert.alert("Not supported", "Push notifications work on a physical device (Expo Go or dev build), not web."); return; }
-    if (isExpoGoPushUnsupported()) { Alert.alert("Dev build required", "Android push was removed from Expo Go in SDK 53. Use a development build:\n\n• npx expo run:android\n• or eas build --profile development\n\nThen open the dev build, not Expo Go."); return; }
-    const token = await registerForPushNotificationsAsync();
-    if (token) { setPushToken(token); setPushStatus('granted'); Alert.alert("Notifications enabled ✓", "You’ll get alerts for new announcements."); }
-    else {
-      try {
-        const { getPermissionsAsync } = await import('expo-notifications');
-        const { status } = await getPermissionsAsync();
-        setPushStatus(status as any);
-        if (status === 'denied') Alert.alert("Permission denied", "Enable notifications in Settings > PasokCheck > Notifications.");
-      } catch {}
-    }
-  };
-
-  const handleTestPush = async () => {
-    try {
-      const host = Platform.OS === 'web' ? 'localhost' : '10.0.2.2';
-      const r = await fetch(`http://${host}:3000/api/push/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Test — PasokCheck', body: `Hello! ${trackedPages[0]?.id || 'Test'} has a new post 🔔`, pageId: trackedPages[0]?.id || 'test' }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || 'Failed');
-      Alert.alert("Test sent ✓", `Pushed to ${j.sent} device(s). Check your notification shade.`);
-    } catch (e: any) { Alert.alert("Test failed", e.message + '\nMake sure scraper is running on port 3000'); }
-  };
-
   const overall=getOverall();
   const lastChecked=trackedPages.length? trackedPages.reduce((a,b)=>(a.timestamp && b.timestamp && new Date(a.timestamp)>new Date(b.timestamp)?a:b)).timestamp : undefined;
   const lastAgo=lastChecked? timeAgo(lastChecked) : null;
@@ -221,6 +188,7 @@ export default function HomeScreen() {
   const getRow=(s?:string)=>{
     if(s==='Asynchronous') return {label:'No class', sub:'Async — stay home', chip:'bg-emerald-100 text-emerald-800 border-emerald-200', dot:'bg-emerald-500'};
     if(s==='Synchronous') return {label:'No class', sub:'Online — sync', chip:'bg-amber-100 text-amber-800 border-amber-200', dot:'bg-amber-500'};
+    if(s==='Holiday') return {label:'Holiday', sub:'Public holiday — no class', chip:'bg-violet-100 text-violet-800 border-violet-200', dot:'bg-violet-400'};
     if(s==='No Announcement') return {label:'Regular class', sub:'No suspension posted', chip:'bg-zinc-100 text-zinc-700 border-zinc-200', dot:'bg-zinc-400'};
     if(s==='Scanning...') return {label:'Pending', sub:'No announcement yet', chip:'bg-white text-zinc-600 border-zinc-300', dot:'bg-zinc-300'};
     return {label:s||'—', sub:'—', chip:'bg-white text-zinc-600 border-zinc-200', dot:'bg-zinc-300'};
@@ -292,9 +260,9 @@ export default function HomeScreen() {
                 </View>
                 <Text className="text-[#5A5A5A] text-[12px] leading-4 mt-1.5">{overall.hint}</Text>
               </View>
-              {/* corner badge — shrunk from 84px to 48px */}
+              {/* corner badge */}
               <View className="w-12 h-12 bg-white border-2 border-black rounded-xl items-center justify-center shrink-0">
-                <Text className="text-xl">{overall.icon}</Text>
+                <FontAwesomeIcon icon={overall.icon} size={22} color={overall.iconColor} />
               </View>
             </View>
           </View>
@@ -455,50 +423,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* NOTIFICATIONS — push for new announcements */}
-        <View className="px-4 mt-4">
-          <View className="bg-white rounded-2xl border border-zinc-200 p-4">
-            <View className="flex-row items-center gap-3">
-              <View className="w-9 h-9 bg-[#FFE600] rounded-xl border border-black items-center justify-center">
-                <Bell size={16} color="#000" strokeWidth={2.5} />
-              </View>
-              <View className="flex-1">
-                <Text className="text-zinc-900 font-bold text-sm">New announcement alerts</Text>
-                <Text className="text-[#5A5A5A] text-xs leading-4">Get a push when any tracked page posts a new update</Text>
-              </View>
-              {isExpoGoPushUnsupported() ? (
-                <View className="bg-amber-100 border border-amber-200 rounded-full px-2.5 py-1">
-                  <Text className="text-amber-800 font-bold text-xs">Expo Go</Text>
-                </View>
-              ) : pushStatus === 'granted' ? (
-                <View className="bg-emerald-100 border border-emerald-200 rounded-full px-2.5 py-1">
-                  <Text className="text-emerald-800 font-bold text-xs">On ✓</Text>
-                </View>
-              ) : (
-                <TouchableOpacity onPress={handleEnablePush} className="bg-zinc-900 rounded-full px-4 py-2">
-                  <Text className="text-white font-bold text-xs">Enable</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            {isExpoGoPushUnsupported() && (
-              <Text className="text-amber-700 text-xs mt-2 leading-4">Expo Go on Android doesn’t support push since SDK 53. Build a dev client: `npx expo run:android` or `eas build --profile development`.</Text>
-            )}
-            {pushStatus === 'granted' && pushToken && !isExpoGoPushUnsupported() && (
-              <View className="mt-3 flex-row items-center justify-between">
-                <Text className="text-zinc-400 text-[10px] flex-1" numberOfLines={1}>Token: {pushToken.slice(0, 22)}…</Text>
-                <TouchableOpacity onPress={handleTestPush} className="bg-zinc-900 rounded-full px-3 py-1.5">
-                  <Text className="text-white font-bold text-[11px]">Send test</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            {pushStatus === 'denied' && !isExpoGoPushUnsupported() && (
-              <Text className="text-amber-700 text-xs mt-2">Permission denied — enable in system Settings</Text>
-            )}
-            {Platform.OS === 'web' && (
-              <Text className="text-zinc-400 text-xs mt-2">Push only works on device (dev build)</Text>
-            )}
-          </View>
-        </View>
+        {/* Notifications block temporarily removed */}
 
         {/* FOOTER */}
         <View className="px-4 mt-4">

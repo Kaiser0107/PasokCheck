@@ -25,96 +25,90 @@ const client = new ApifyClient({
     token: process.env.APIFY_TOKEN,
 });
 
-// --- Expo Push Helpers ---
-async function getExpoPushTokens() {
-  const snap = await db.ref('expo_push_tokens').once('value');
-  const val = snap.val();
-  if (!val) return [];
-  return Object.values(val).map(v => v.token || v).filter(t => typeof t === 'string' && t.startsWith('ExponentPushToken'));
-}
 
-async function sendExpoPushMessages(messages) {
-  if (!messages.length) return;
-  // Expo allows max 100 per request
-  const chunks = [];
-  for (let i = 0; i < messages.length; i += 100) chunks.push(messages.slice(i, i+100));
-  for (const chunk of chunks) {
-    try {
-      const res = await fetchFn('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify(chunk),
-      });
-      const data = await res.json();
-      console.log('[push] Expo response', JSON.stringify(data).slice(0, 500));
-      // Log errors for invalid tokens (could clean up)
-      if (data.errors) console.error('[push] errors', data.errors);
-    } catch (e) {
-      console.error('[push] failed to send chunk', e.message);
-    }
-  }
-}
+// Philippine public holidays (MM-DD format)
+// Regular Holidays + Special Non-Working Days (2025-2026)
+const PH_HOLIDAYS = {
+  // 2025 Regular Holidays
+  '01-01': "New Year's Day",
+  '04-09': 'Araw ng Kagitingan (Day of Valor)',
+  '04-17': 'Maundy Thursday',
+  '04-18': 'Good Friday',
+  '05-01': 'Labor Day',
+  '06-12': 'Independence Day',
+  '08-25': 'National Heroes Day',
+  '11-30': 'Bonifacio Day',
+  '12-25': 'Christmas Day',
+  '12-30': 'Rizal Day',
+  // 2025 Special Non-Working Days
+  '02-25': 'EDSA People Power Revolution Anniversary',
+  '04-19': 'Black Saturday',
+  '08-21': 'Ninoy Aquino Day',
+  '11-01': "All Saints' Day",
+  '11-02': "All Souls' Day",
+  '12-08': 'Feast of the Immaculate Conception',
+  '12-24': 'Christmas Eve',
+  '12-31': "New Year's Eve",
+  // 2026 Regular Holidays
+  '03-28': 'Eid al-Fitr (2026)',
+  '06-04': 'Eid al-Adha (2026)',
+};
 
-async function notifyNewPosts(pageId, newPosts) {
-  if (!newPosts.length) return;
-  const tokens = await getExpoPushTokens();
-  if (!tokens.length) {
-    console.log(`[push] No expo tokens — skipping push for ${pageId}`);
-    return;
-  }
-  const latest = newPosts[0];
-  const snippet = (latest.text || '').slice(0, 120).replace(/\s+/g, ' ').trim() || 'New post on Facebook';
-  const titleMap = {
-    'Asynchronous': `No class — ${pageId}`,
-    'Synchronous': `Online class — ${pageId}`,
-    'No Announcement': `Update from ${pageId}`,
-  };
-  const title = titleMap[latest.status] || `New post from ${pageId}`;
-  const body = snippet.length > 80 ? snippet.slice(0, 80) + '…' : snippet;
-
-  const messages = tokens.map(token => ({
-    to: token,
-    sound: 'default',
-    title,
-    body,
-    data: { pageId, postId: latest.postId, status: latest.status, url: latest.postUrl || `https://facebook.com/${pageId}` },
-    channelId: 'default',
-    priority: 'high',
-  }));
-  console.log(`[push] Sending ${messages.length} pushes for ${pageId} — "${title}"`);
-  await sendExpoPushMessages(messages);
+/**
+ * Check if a given date (or today) is a Philippine holiday.
+ * Returns { isHoliday: bool, name: string|null }
+ */
+function checkHoliday(date = new Date()) {
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const key = `${mm}-${dd}`;
+  const name = PH_HOLIDAYS[key] || null;
+  return { isHoliday: !!name, name };
 }
 
 // Process raw post data to determine status
 function evaluatePostStatus(text) {
   const asyncKeywords = [
-    'walang pasok', 'walangpasok', 'suspended', 'suspension', 'asynchronous', 'asynch', 
-    'modular', 'distance learning',  'cancelled', 'no face-to-face',
-    'no face to face', 'no f2f', "#WALANGPASOK"
+    'walang pasok', 'walangpasok', 'suspended', 'suspension', 'asynchronous', 'asynch',
+    'modular', 'distance learning', 'cancelled', 'no face-to-face',
+    'no face to face', 'no f2f', '#walangpasok'
   ];
-  
   const syncKeywords = [
-    'synchronous', 'online class', 'online classes', 'face to face', 
+    'synchronous', 'online class', 'online classes', 'face to face',
     'face-to-face', 'resume', 'resumed', 'f2f'
   ];
-
   const normalizedText = text.normalize('NFKC').toLowerCase();
-
   for (const keyword of asyncKeywords) {
     if (normalizedText.includes(keyword)) return 'Asynchronous';
   }
-  
   for (const keyword of syncKeywords) {
     if (normalizedText.includes(keyword)) return 'Synchronous';
   }
-
   return 'No Announcement';
 }
 
 // Scrape and Update logic
 async function performDeltaFetch() {
   console.log("Starting Delta Fetch process...");
-  
+
+  // --- Holiday Check: skip Apify entirely, mark all pages as Holiday ---
+  const today = checkHoliday();
+  if (today.isHoliday) {
+    console.log(`[holiday] Today is "${today.name}" — marking all pages as Holiday, skipping Apify.`);
+    const snapshot = await db.ref('tracked_pages').once('value');
+    const trackedPages = snapshot.val();
+    if (!trackedPages) { console.log('No pages tracked. Exiting.'); return; }
+    const updates = {};
+    for (const key of Object.keys(trackedPages)) {
+      updates[`tracked_pages/${key}/latestStatus`] = 'Holiday';
+      updates[`tracked_pages/${key}/holidayName`] = today.name;
+      updates[`tracked_pages/${key}/lastUpdated`] = new Date().toISOString();
+    }
+    await db.ref('/').update(updates);
+    console.log(`[holiday] Marked ${Object.keys(trackedPages).length} pages as Holiday.`);
+    return;
+  }
+
   // 1. Fetch tracked pages from Firebase
   const snapshot = await db.ref('tracked_pages').once('value');
   const trackedPages = snapshot.val();
@@ -147,13 +141,10 @@ async function performDeltaFetch() {
   async function runApifyScraper(urls, limit) {
     if (urls.length === 0) return [];
     console.log(`Running Apify actor for ${urls.length} pages with resultsLimit=${limit}...`);
-    
-    // Using the official free Facebook posts scraper on Apify
     const run = await client.actor("apify/facebook-posts-scraper").call({
         startUrls: urls,
         resultsLimit: limit
     });
-    
     console.log(`Apify run finished. Fetching dataset ${run.defaultDatasetId}...`);
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
     return items;
@@ -162,8 +153,6 @@ async function performDeltaFetch() {
   // 2. Perform Deep Fetch for new pages (Top 5 posts)
   if (needsDeepFetchUrls.length > 0) {
     const deepPosts = await runApifyScraper(needsDeepFetchUrls, 5);
-    
-    // Group posts by page URL
     const postsByUrl = {};
     deepPosts.forEach(post => {
       const pageUrl = post.facebookUrl || post.inputUrl;
@@ -173,15 +162,20 @@ async function performDeltaFetch() {
 
     for (const page of pagesArray.filter(p => !p.hasDoneInitialFetch)) {
       const pagePosts = postsByUrl[page.url] || [];
-      const newHistory = pagePosts.map(post => ({
-        postId: post.id || post.url,
-        timestamp: post.time || new Date().toISOString(),
-        text: post.text || "",
-        status: evaluatePostStatus(post.text || "")
-      }));
+
+      // Only save posts that are actual suspension announcements
+      const newHistory = pagePosts
+        .map(post => ({
+          postId: post.id || post.url,
+          timestamp: post.time || new Date().toISOString(),
+          text: post.text || "",
+          status: evaluatePostStatus(post.text || "")
+        }))
+        .filter(entry => entry.status === 'Asynchronous' || entry.status === 'Synchronous');
 
       newHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      
+
+      // latestStatus: most recent suspension, or 'No Announcement' if none
       const latestStatus = newHistory.length > 0 ? newHistory[0].status : 'No Announcement';
       const pfp = pagePosts.length ? extractPfp(pagePosts[0], page.id) : `https://graph.facebook.com/${encodeURIComponent(page.id)}/picture?type=large&width=200&height=200`;
       const pageName = pagePosts.length ? extractPageName(pagePosts[0]) : null;
@@ -194,15 +188,13 @@ async function performDeltaFetch() {
         pfp,
         ...(pageName ? { pageName } : {}),
       });
-      console.log(`Completed Deep Fetch for ${page.id}. Found ${newHistory.length} posts. pfp=${pfp?.slice(0,60)}`);
+      console.log(`Completed Deep Fetch for ${page.id}. Saved ${newHistory.length} relevant posts (of ${pagePosts.length} scraped).`);
     }
   }
 
-  // 3. Perform Delta Fetch for existing pages (Top 1 posts)
+  // 3. Perform Delta Fetch for existing pages (Top 1 post)
   if (needsDeltaFetchUrls.length > 0) {
     const deltaPosts = await runApifyScraper(needsDeltaFetchUrls, 1);
-    
-    // Group posts by page URL
     const postsByUrl = {};
     deltaPosts.forEach(post => {
       const pageUrl = post.facebookUrl || post.inputUrl;
@@ -213,28 +205,34 @@ async function performDeltaFetch() {
     for (const page of pagesArray.filter(p => p.hasDoneInitialFetch)) {
       const pagePosts = postsByUrl[page.url] || [];
       let updatedHistory = [...page.history];
-      let newlyAdded = [];
       let addedCount = 0;
 
       for (const post of pagePosts) {
         const postId = post.id || post.url;
+        const status = evaluatePostStatus(post.text || "");
+
+        // Skip posts that are not related to class suspensions
+        if (status === 'No Announcement') {
+          console.log(`[skip] ${page.id}: post "${(post.text||'').slice(0,60)}" is not an announcement — not saved.`);
+          continue;
+        }
+
         const exists = updatedHistory.some(h => h.postId === postId);
-        
         if (!exists) {
           const entry = {
-            postId: postId,
+            postId,
             timestamp: post.time || new Date().toISOString(),
             text: post.text || "",
-            status: evaluatePostStatus(post.text || "")
+            status,
           };
           updatedHistory.unshift(entry);
-          newlyAdded.push(entry);
           addedCount++;
         }
       }
 
       updatedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      
+
+      // Compute latestStatus: latest relevant post, or 'No Announcement' if history is empty
       const latestStatus = updatedHistory.length > 0 ? updatedHistory[0].status : 'No Announcement';
       // pfp backfill / update
       let pfpUpdate = {};
@@ -259,7 +257,6 @@ async function performDeltaFetch() {
           ...pfpUpdate,
         });
         console.log(`Completed Delta Fetch for ${page.id}. Added ${addedCount} NEW posts.`);
-        notifyNewPosts(page.id, newlyAdded).catch(e => console.error('[push] notify failed', e));
       } else {
         if (Object.keys(pfpUpdate).length) {
           await db.ref(`tracked_pages/${page.id}`).update(pfpUpdate);
@@ -289,32 +286,6 @@ app.post('/api/refresh', async (req, res) => {
   }
 });
 
-// Debug: list push tokens
-app.get('/api/push/tokens', async (req, res) => {
-  try {
-    const tokens = await getExpoPushTokens();
-    res.json({ count: tokens.length, tokens: tokens.map(t => t.slice(0, 20) + '…') });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Test push: POST { title?, body?, pageId? } — sends to all registered tokens
-app.post('/api/push/test', async (req, res) => {
-  try {
-    const tokens = await getExpoPushTokens();
-    if (!tokens.length) return res.status(400).json({ error: 'No tokens registered yet. Enable push on device first.' });
-    const { title = 'Test — PasokCheck', body = 'This is a test push for new announcements 🔔', pageId = 'test' } = req.body || {};
-    const messages = tokens.map(to => ({
-      to, sound: 'default', title, body,
-      data: { pageId, test: true },
-      channelId: 'default',
-    }));
-    await sendExpoPushMessages(messages);
-    res.json({ success: true, sent: messages.length });
-  } catch (e) {
-    console.error('[push/test] error', e);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

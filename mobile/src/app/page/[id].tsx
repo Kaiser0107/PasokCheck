@@ -3,8 +3,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { getDatabase, ref, onValue, remove } from 'firebase/database';
 import { app } from '../../lib/firebase';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ExternalLink, Calendar, Bell, Clock, ShieldCheck, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, ExternalLink, Calendar, Clock, ShieldCheck, Trash2 } from 'lucide-react-native';
 import { Image } from 'expo-image';
+import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
+import { faListCheck } from '@fortawesome/free-solid-svg-icons';
 
 function timeAgo(iso?: string) {
   if (!iso) return '—';
@@ -39,6 +41,7 @@ export default function PageDetails() {
     switch(status?.toLowerCase()) {
       case 'asynchronous': return { bg: 'bg-emerald-50', chip: 'bg-emerald-100 text-emerald-800 border-emerald-200', label: 'No class — Async', desc: 'Stay home, do async tasks' };
       case 'synchronous': return { bg: 'bg-amber-50', chip: 'bg-amber-100 text-amber-800 border-amber-200', label: 'No class — Sync', desc: 'Online class today' };
+      case 'holiday': return { bg: 'bg-violet-50', chip: 'bg-violet-100 text-violet-800 border-violet-200', label: 'Holiday', desc: 'Public holiday — schools are closed' };
       case 'no announcement':
       case 'face to face': return { bg: 'bg-white', chip: 'bg-zinc-100 text-zinc-700 border-zinc-200', label: 'Regular class', desc: 'No suspension posted — tuloy ang pasok' };
       default: return { bg: 'bg-white', chip: 'bg-white text-zinc-600 border-zinc-300', label: status || 'Unknown', desc: 'Checking latest bulletin...' };
@@ -161,7 +164,7 @@ export default function PageDetails() {
             </View>
             <View className="flex-1 bg-white rounded-xl border border-zinc-200 p-3 flex-row items-center gap-2">
               <View className="w-7 h-7 bg-zinc-50 rounded-lg border border-zinc-200 items-center justify-center">
-                <Bell size={12} color="#52525b" strokeWidth={2} />
+                <FontAwesomeIcon icon={faListCheck} size={12} color="#52525b" />
               </View>
               <View>
                 <Text className="text-[#5A5A5A] font-bold text-[10px] tracking-widest">POSTS</Text>
